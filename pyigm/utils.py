@@ -1,5 +1,6 @@
 """ Utilities for IGM calculations
 """
+
 import numpy as np
 import pdb
 
@@ -414,7 +415,7 @@ def get_components(obj,ion,zrange=None):
 
 def confintervals(hits,totals,sig=1,confidence=None):
     """Wrapper for confinterval() function to accept arrays of hits and totals
-    
+
     Parameters
     ----------
     hits : list or array
@@ -430,7 +431,7 @@ def confintervals(hits,totals,sig=1,confidence=None):
     -------
     fracs : list of floats
         Fractions of hits/totals
-    lolims : list of floats 
+    lolims : list of floats
         Lower bounds of confidence interval
     uplims : list of floats
         Upper bounds of confidence interval
