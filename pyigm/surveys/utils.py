@@ -58,25 +58,31 @@ def load_sys_files(inp, type, ref=None, sys_path=False, build_abs_sys=False, **k
             survey._abs_sys.append(abssys)
     else:  # tarball
         print('Loading systems from {:s}'.format(inp))
-        tar = tarfile.open(inp)
+        tar = tarfile.open(inp,'r:gz')
         for member in tar.getmembers():
             if '.' not in member.name:
                 print('Skipping a likely folder: {:s}'.format(member.name))
                 continue
             # Extract
             f = tar.extractfile(member)
-            tdict = json.load(f)
+            f = f.read()
+            f = f.decode('utf-8')
+
+            tdict = json.loads(f)
             # Add keys (for backwards compatability)
             if ('NHI' in tdict.keys()) and ('flag_NHI' not in tdict.keys()):
                 tdict['flag_NHI'] = 1
             # Add to list of dicts
             survey._dict[tdict['Name']] = tdict
         tar.close()
+    # Mask
+    survey.init_mask()
 
     # Set coordinates
     ras = [survey._dict[key]['RA'] for key in survey._dict.keys()]
     decs = [survey._dict[key]['DEC'] for key in survey._dict.keys()]
     survey.coords = SkyCoord(ra=ras, dec=decs, unit='deg')
+
 
     # Build AbsSystem objects?
     if build_abs_sys:

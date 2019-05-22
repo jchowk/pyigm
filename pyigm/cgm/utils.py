@@ -16,6 +16,7 @@ from linetools import utils as ltu
 from linetools.lists.linelist import LineList
 from linetools.isgm.abscomponent import AbsComponent
 from linetools.spectralline import AbsLine
+from linetools.analysis.zlimits import zLimits
 
 from pyigm.field.galaxy import Galaxy
 from pyigm.abssys.igmsys import IGMSystem
@@ -86,6 +87,7 @@ def get_close_galaxies(field,rho_max=300.*u.kpc,minz=0.001,maxz=None):
 def cgmabssys_from_sightline_field(field,sightline,rho_max=300.*u.kpc,minz=0.001,
                                    maxz=None,dv_max=400.*u.km/u.s,embuffer=None,
                                    dummysys=True,dummyspec=None,linelist=None,
+                                   debug=False,
                                    **kwargs):
     """Instantiate list of CgmAbsSys objects from IgmgGalaxyField and IGMSightline.
 
@@ -138,9 +140,11 @@ def cgmabssys_from_sightline_field(field,sightline,rho_max=300.*u.kpc,minz=0.001
 
 
     closegals = get_close_galaxies(field,rho_max,minz,zmax)
+    if debug:
+        closegals = closegals[0:10]
     cgmabslist = []
     for i,gal in enumerate(closegals):
-
+        #print('i={:d}'.format(i))
         galobj = Galaxy((gal['RA'],gal['DEC']),z=gal['Z'])
         cgmobj = cgm_from_galaxy_igmsystems(galobj,sightline._abssystems,
                                             dv_max=dv_max, dummysys=dummysys,
@@ -195,7 +199,7 @@ def cgmsurvey_from_sightlines_fields(fields, sightlines, rho_max=300*u.kpc,
 
 
 def cgm_from_galaxy_igmsystems(galaxy, igmsystems, rho_max=300*u.kpc, dv_max=400*u.km/u.s,
-                               cosmo=None, dummysys=False, dummyspec=None, **kwargs):
+                               cosmo=None, dummysys=False, dummyspec=None, verbose=True, **kwargs):
     """ Generate a list of CGMAbsSys objects given an input galaxy and a list of IGMSystems
 
     Parameters
@@ -220,7 +224,6 @@ def cgm_from_galaxy_igmsystems(galaxy, igmsystems, rho_max=300*u.kpc, dv_max=400
 
     """
     from pyigm.cgm.cgm import CGMAbsSys
-    import copy
     # Cosmology
     if cosmo is None:
         cosmo = cosmology.Planck15
@@ -230,8 +233,12 @@ def cgm_from_galaxy_igmsystems(galaxy, igmsystems, rho_max=300*u.kpc, dv_max=400
             dummyspec = igmsystems[0]._components[0]._abslines[0].analy['spec']
         dummycoords = igmsystems[0].coord
 
-    # R
-    rho, angles = calc_cgm_rho(galaxy, igmsystems, cosmo)
+    # R -- speed things up
+    rho, angles = calc_cgm_rho(galaxy, igmsystems, cosmo, **kwargs)
+    if len(igmsystems) == 1:  # Kludge
+        rho = u.Quantity([rho])
+        angles = u.Quantity([angles])
+
 
     # dv
     igm_z = np.array([igmsystem.zabs for igmsystem in igmsystems])
@@ -239,12 +246,27 @@ def cgm_from_galaxy_igmsystems(galaxy, igmsystems, rho_max=300*u.kpc, dv_max=400
 
     # Rules
     match = np.where((rho<rho_max) & (np.abs(dv) < dv_max))[0]
+
+    ### If none, see if some system has a component that's actually within dv_max
+    if (len(match) == 0)&(rho[0] < rho_max):
+        zcomps = []
+        sysidxs = []
+        for i, csys in enumerate(igmsystems):
+            thesezs = [comp.zcomp for comp in csys._components]
+            sysidxs.extend([i] * len(thesezs))
+            zcomps.extend(thesezs)
+        zcomps = np.array(zcomps)
+        sysidxs = np.array(sysidxs)
+        dv_comps = ltu.dv_from_z(zcomps,galaxy.z)
+        match = np.unique(sysidxs[np.where(np.abs(dv_comps)<dv_max)[0]])
+
     if len(match) == 0:
         if dummysys is False:
             print("No IGMSystem paired to this galaxy. CGM object not created.")
             return []
         else:
-            print("No IGMSystem match found. Attaching dummy IGMSystem.")
+            if verbose:
+                print("No IGMSystem match found. Attaching dummy IGMSystem.")
             dummysystem = IGMSystem(dummycoords,galaxy.z,vlim=None)
             dummycomp = AbsComponent(dummycoords,(1,1),galaxy.z,[-100.,100.]*u.km/u.s)
             dummycomp.flag_N = 3
@@ -256,7 +278,6 @@ def cgm_from_galaxy_igmsystems(galaxy, igmsystems, rho_max=300*u.kpc, dv_max=400
             cgm = CGMAbsSys(galaxy, dummysystem, cosmo=cosmo, **kwargs)
             cgm_list = [cgm]
     else:
-        from linetools.analysis.zlimits import zLimits
         # Loop to generate
         cgm_list = []
         for imatch in match:
@@ -264,19 +285,24 @@ def cgm_from_galaxy_igmsystems(galaxy, igmsystems, rho_max=300*u.kpc, dv_max=400
             # Otherwise, updates to the IGMSystem cross-pollinate other CGMs
             sysmatch = igmsystems[imatch]
             newisys = sysmatch.copy()
+            # Handle z limits
             zlim = ltu.z_from_dv((-dv_max.value,dv_max.value)*u.km/u.s,galaxy.z)
             newlims = zLimits(galaxy.z,zlim.tolist())
             newisys.limits = newlims
+            # Allow for components extending beyond dv_max
+            newisys.update_vlim()
             newisys.update_component_vel()
-            cgm = CGMAbsSys(galaxy, newisys, cosmo=cosmo, **kwargs)
+            # Finish
+            cgm = CGMAbsSys(galaxy, newisys, cosmo=cosmo, rho=rho[imatch], ang_sep=angles[imatch], **kwargs)
             cgm_list.append(cgm)
 
     # Return
     return cgm_list
 
-def covering_fraction(iontable,colthresh,rhobins=None,returncounts=False,**kwargs):
+def covering_fraction(iontable,colthresh,sys_attr='rho_impact',bins=None,
+                      returncounts=False,**kwargs):
     """Given some detection threshold, calculate the ion covering fraction
-    within impact parameter bins
+    within bins of some quantity (impact parameter by default)
 
     Parameters
     ----------
@@ -285,8 +311,10 @@ def covering_fraction(iontable,colthresh,rhobins=None,returncounts=False,**kwarg
     colthresh : float or None
         Detection threshold in log column density; if None, impose no threshold
         Nondetections with upper limits above this threshold are ignored
-    rhobins,optional : list of ints or floats
-        Bins in impact parameter (units of kpc).  If None,
+    sys_attr : str, optional
+        Column name in iontable corresponding to given bins 
+    bins,optional : list of ints or floats
+        Bins in impact parameter (units of kpc) or other quantity
     returncounts : bool, optional
         If True, return numbers of hits and total systems within each bin
 
@@ -294,9 +322,9 @@ def covering_fraction(iontable,colthresh,rhobins=None,returncounts=False,**kwarg
     -------
     fracs : list of floats
         Covering fraction for each bin
-    lolims : list of floats
+    lobars : list of floats
         Lower limits on covering fractions
-    uplims : list of floats
+    upbars : list of floats
         Upper limits on covering fractions
     dethist : list of ints, optional
         Number of detections in each bin
@@ -308,25 +336,28 @@ def covering_fraction(iontable,colthresh,rhobins=None,returncounts=False,**kwarg
 
     # Clean up table to remove nulls if they exist
     itab = iontable.copy()
-    itab = itab[itab['flag_N']>0]
+    goodones = np.where(itab['flag_N']>0)[0]
+    itab = itab[goodones]
+
     flag = itab['flag_N']
     col = itab['logN']
-    rho = itab['rho_impact']
+    rho = itab[sys_attr]
 
-    if rhobins is None:
-        rhobins = [0,np.max(rho)]
+    if bins is None:
+        bins = [0,np.max(rho)]
 
     # Impose threshold if it exists
     if colthresh != None:
         dets = np.where(((flag == 1) | (flag == 2))&(col > colthresh))[0]
-        nondets = np.where((flag == 3) & (col <= colthresh))[0]
+        nondets = np.where(((flag == 3) & (col <= colthresh)) |
+                            ((flag == 1) & (col <= colthresh)) )[0]
     else:
         dets = np.where((flag == 1) | (flag == 2))[0]
         nondets = np.where((flag == 3))[0]
 
     # Set up and sort bins
-    dethist, bins = np.histogram(rho[dets], bins=rhobins)
-    nondethist, bins = np.histogram(rho[nondets], bins=rhobins)
+    dethist, histbins = np.histogram(rho[dets], bins=bins)
+    nondethist, histbins = np.histogram(rho[nondets], bins=bins)
 
     # Get the stats
     tothist = nondethist + dethist

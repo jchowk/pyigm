@@ -40,7 +40,7 @@ Analyzing DLA
 Here is now my preferred approach to searching for DLA:
 
 1.  Load up the spectrum.  Fiddle with the continuum
-
+#
 '''
 
 # GUI for fitting DLA in a spectrum
@@ -136,7 +136,10 @@ Q         : Quit the GUI
             spec = ispec
             spec_fil = spec.filename
         else:
-            spec, spec_fil = ltgu.read_spec(ispec)
+            kwargs = {}
+            kwargs['rsp_kwargs'] = {}
+            kwargs['rsp_kwargs']['masking'] = 'edges'
+            spec, spec_fil = ltgu.read_spec(ispec, norm=norm, **kwargs)
         self.spec = spec
 
 
@@ -168,17 +171,36 @@ Q         : Quit the GUI
         if dla_fit_file is not None:
             self.init_DLA(dla_fit_file,spec)
         else:
-            if conti_file is not None:
-                # Read continuum
-                cspec = lsi.readspec(conti_file)
-                if not cspec.sig_is_set:
-                    cspec.sig = 0.1*np.median(cspec.flux)
+            if conti_file == 'from_spectrum':
+                co = spec.co
+                # knots: list of (x,y) pairs, giving the position of
+                # spline knots used to generate the continuum
+                #knots =
+                nknots = 100
+                knots = []
+                for ii in range(nknots):
+                    ii2 = round(ii*len(spec.wavelength)/nknots)
+                    knots.append((spec.wavelength[ii2].value,spec.co[ii2]))
+                # add all min and max points
+                for ii in range(len(spec.wavelength)-2):
+                    if ((spec.co[ii] - spec.co[ii+1])*(spec.co[ii+2] - spec.co[ii+1]) > 0):
+                        iknot = (spec.wavelength[ii].value,spec.co[ii])
+                        if iknot not in knots:
+                            knots.append(iknot)
+
             else:
-                cspec = spec
-            if zqso is not None:
-                co, knots = laco.find_continuum(cspec, redshift=self.zqso)
-            else:
-                co, knots = laco.find_continuum(cspec, kind='default')
+                if conti_file is not None:
+                    # Read continuum
+                    cspec = lsi.readspec(conti_file)
+                    if not cspec.sig_is_set:
+                        cspec.sig = 0.1*np.median(cspec.flux)
+                else:
+                    cspec = spec
+                if zqso is not None:
+                    co, knots = laco.find_continuum(cspec, redshift=self.zqso)
+                else:
+                    co, knots = laco.find_continuum(cspec, kind='default')
+
             self.conti_dict = dict(co=co, knots=knots)
 
         self.update_conti()
@@ -366,7 +388,8 @@ Q         : Quit the GUI
         # Angstroms
         # should really make this a constant velocity width array instead.
         if not self.skip_wveval:
-            wa1 = np.arange(wa[0].value, wa[-1].value, self.dw) * wa.unit
+            #wa1 = np.arange(wa[0].value, wa[-1].value, self.dw) * wa.unit
+            wa1 = np.arange(self.full_model.wvmin.value, self.full_model.wvmax.value, self.dw) * wa.unit
         else:
             wa1 = wa
         #all_tau_model = igmlls.tau_multi_lls(wa1,
